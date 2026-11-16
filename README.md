@@ -1,6 +1,6 @@
 # Mesa de Partes
 
-App de expedientes en SQLite con notificaciones por hora. Funciona en **Linux** y **Windows**.
+Programa Python de expedientes en SQLite con notificaciones por hora. Funciona en **Linux** y **Windows**.
 
 ## Dependencias
 
