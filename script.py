@@ -28,7 +28,8 @@ def inicializar_db():
                 remitente TEXT NOT NULL,
                 asunto TEXT NOT NULL,
                 area TEXT NOT NULL,
-                estado TEXT NOT NULL
+                estado TEXT NOT NULL,
+                hora_notif TEXT NOT NULL DEFAULT '09:00'
             );
 
             CREATE TABLE IF NOT EXISTS historial (
@@ -44,8 +45,16 @@ def inicializar_db():
                 clave TEXT PRIMARY KEY,
                 valor TEXT NOT NULL
             );
+
+            INSERT OR IGNORE INTO config (clave, valor)
+            VALUES ('hora_notif', '09:00');
             """
         )
+        columnas = {r["name"] for r in conn.execute("PRAGMA table_info(expedientes)")}
+        if "hora_notif" not in columnas:
+            conn.execute(
+                "ALTER TABLE expedientes ADD COLUMN hora_notif TEXT NOT NULL DEFAULT '09:00'"
+            )
 
 def set_hora(hora: str) -> None:
     with conectar() as conn:
@@ -81,23 +90,50 @@ def elegir_estado(actual=None):
         print("Opción inválida.")
 
 
+def hora_valida(hora: str) -> bool:
+    try:
+        hh, mm = (int(x) for x in hora.split(":"))
+        return 0 <= hh < 24 and 0 <= mm < 60
+    except (ValueError, TypeError):
+        return False
+
+
+def normalizar_hora(hora: str) -> str:
+    hh, mm = (int(x) for x in hora.split(":"))
+    return f"{hh:02d}:{mm:02d}"
+
+
+def hora_default() -> str:
+    with conectar() as conn:
+        row = conn.execute(
+            "SELECT valor FROM config WHERE clave='hora_notif'"
+        ).fetchone()
+    return row["valor"] if row else "09:00"
+
+
 def registrar_expediente():
     print("\n--- Registrar expediente ---")
     remitente = input("Remitente: ").strip()
     asunto = input("Asunto: ").strip()
     area = input("Área responsable: ").strip()
+    default = hora_default()
+    hora = input(f"Hora de notificación (HH:MM) [{default}]: ").strip() or default
     if not remitente or not asunto or not area:
         print("Remitente, asunto y área son obligatorios.")
         return
+    if not hora_valida(hora):
+        print("Hora inválida. Usá HH:MM, por ejemplo 09:30.")
+        return
+    hora = normalizar_hora(hora)
 
     with conectar() as conn:
         codigo = generar_codigo(conn)
         fecha = ahora()
         estado = "INGRESADO"
         cur = conn.execute(
-            """INSERT INTO expedientes (codigo, fecha_ingreso, remitente, asunto, area, estado)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (codigo, fecha, remitente, asunto, area, estado),
+            """INSERT INTO expedientes (codigo, fecha_ingreso, remitente, asunto, area, estado, hora_notif)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (codigo, fecha, remitente, asunto, area, estado, hora),
         )
         exp_id = cur.lastrowid
         conn.execute(
@@ -127,7 +163,7 @@ def listar_expedientes(filtro_estado=None):
         return
     for r in filas:
         print(
-            f"[{r['codigo']}] {r['fecha_ingreso']} | {r['estado']}\n"
+            f"[{r['codigo']}] {r['fecha_ingreso']} | {r['estado']} | {r['hora_notif']}\n"
             f"  Remitente: {r['remitente']} | Área: {r['area']}\n"
             f"  Asunto: {r['asunto']}"
         )
@@ -150,12 +186,162 @@ def buscar_expediente():
         return
     for r in filas:
         print(
-            f"[{r['codigo']}] {r['fecha_ingreso']} | {r['estado']}\n"
+            f"[{r['codigo']}] {r['fecha_ingreso']} | {r['estado']} | {r['hora_notif']}\n"
             f"  Remitente: {r['remitente']} | Área: {r['area']}\n"
             f"  Asunto: {r['asunto']}"
         )
 
 
+def cambiar_estado():
+    print("\n--- Cambiar estado ---")
+    codigo = input("Código del expediente: ").strip().upper()
+    if not codigo:
+        return
+
+    with conectar() as conn:
+        exp = conn.execute(
+            "SELECT * FROM expedientes WHERE codigo = ?", (codigo,)
+        ).fetchone()
+        if not exp:
+            print("No existe ese expediente.")
+            return
+
+        print(f"Estado actual: {exp['estado']}")
+        nuevo = elegir_estado(exp["estado"])
+        if nuevo == exp["estado"]:
+            print("Sin cambios.")
+            return
+
+        observacion = input("Observación (opcional): ").strip() or None
+        conn.execute(
+            "UPDATE expedientes SET estado = ? WHERE id = ?",
+            (nuevo, exp["id"]),
+        )
+        conn.execute(
+            """INSERT INTO historial (expediente_id, fecha, estado_anterior, estado_nuevo, observacion)
+               VALUES (?, ?, ?, ?, ?)""",
+            (exp["id"], ahora(), exp["estado"], nuevo, observacion),
+        )
+    print(f"Expediente {codigo}: {exp['estado']} -> {nuevo}")
+
+
+def ver_historial():
+    print("\n--- Ver historial ---")
+    codigo = input("Código del expediente: ").strip().upper()
+    if not codigo:
+        return
+
+    with conectar() as conn:
+        exp = conn.execute(
+            "SELECT * FROM expedientes WHERE codigo = ?", (codigo,)
+        ).fetchone()
+        if not exp:
+            print("No existe ese expediente.")
+            return
+        filas = conn.execute(
+            """SELECT fecha, estado_anterior, estado_nuevo, observacion
+               FROM historial WHERE expediente_id = ? ORDER BY id""",
+            (exp["id"],),
+        ).fetchall()
+
+    print(f"\n--- Historial de {codigo} ---")
+    if not filas:
+        print("Sin movimientos.")
+        return
+    for h in filas:
+        anterior = h["estado_anterior"] or "-"
+        obs = f" | {h['observacion']}" if h["observacion"] else ""
+        print(f"{h['fecha']} | {anterior} -> {h['estado_nuevo']}{obs}")
+
+
+def cambiar_hora():
+    with conectar() as conn:
+        row = conn.execute(
+            "SELECT valor FROM config WHERE clave='hora_notif'"
+        ).fetchone()
+    actual = row["valor"] if row else "09:00"
+
+    print(f"\nHora por defecto para nuevos expedientes: {actual}")
+    nueva = input("Nueva hora (HH:MM, Enter para cancelar): ").strip()
+    if not nueva:
+        return
+    if not hora_valida(nueva):
+        print("Hora inválida. Usá HH:MM, por ejemplo 09:30.")
+        return
+
+    nueva = normalizar_hora(nueva)
+    set_hora(nueva)
+    print(f"Hora por defecto actualizada a {nueva}.")
+
+
+def cambiar_hora_expediente():
+    print("\n--- Cambiar hora de un expediente ---")
+    codigo = input("Código del expediente: ").strip().upper()
+    if not codigo:
+        return
+
+    with conectar() as conn:
+        exp = conn.execute(
+            "SELECT * FROM expedientes WHERE codigo = ?", (codigo,)
+        ).fetchone()
+        if not exp:
+            print("No existe ese expediente.")
+            return
+
+        print(f"Hora actual de {codigo}: {exp['hora_notif']}")
+        nueva = input("Nueva hora (HH:MM, Enter para cancelar): ").strip()
+        if not nueva:
+            return
+        if not hora_valida(nueva):
+            print("Hora inválida. Usá HH:MM, por ejemplo 09:30.")
+            return
+
+        nueva = normalizar_hora(nueva)
+        conn.execute(
+            "UPDATE expedientes SET hora_notif = ? WHERE id = ?",
+            (nueva, exp["id"]),
+        )
+    print(f"Hora de {codigo} actualizada a {nueva}.")
+
+
+def menu():
+    while True:
+        print("\n=== Mesa de Partes ===")
+        print("1. Registrar expediente")
+        print("2. Listar expedientes")
+        print("3. Buscar expediente")
+        print("4. Cambiar estado")
+        print("5. Ver historial")
+        print("6. Cambiar hora por defecto")
+        print("7. Cambiar hora de un expediente")
+        print("0. Salir")
+        opcion = input("Opción: ").strip()
+
+        if opcion == "1":
+            registrar_expediente()
+        elif opcion == "2":
+            listar_expedientes()
+        elif opcion == "3":
+            buscar_expediente()
+        elif opcion == "4":
+            cambiar_estado()
+        elif opcion == "5":
+            ver_historial()
+        elif opcion == "6":
+            cambiar_hora()
+        elif opcion == "7":
+            cambiar_hora_expediente()
+        elif opcion == "0":
+            print("Chau.")
+            break
+        else:
+            print("Opción inválida.")
+
+
 if __name__ == "__main__":
     inicializar_db()
-    set_hora("09:00")
+    try:
+        np.configurar()
+    except Exception as exc:
+        print(f"Aviso: no se pudo programar la notificación: {exc}")
+    menu()
