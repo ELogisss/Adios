@@ -37,6 +37,7 @@ def _pendientes_db() -> list[tuple[str, str, str]]:
             """SELECT codigo, asunto, hora_notif
                FROM expedientes
                WHERE estado NOT IN ('ATENDIDO', 'ARCHIVADO')
+                 AND hora_notif <> ''
                ORDER BY hora_notif, id"""
         ).fetchall()
     return rows
@@ -49,6 +50,7 @@ def _vencidas_db() -> list[tuple[str, str]]:
             """SELECT codigo, asunto
                FROM expedientes
                WHERE estado NOT IN ('ATENDIDO', 'ARCHIVADO')
+                 AND hora_notif <> ''
                  AND hora_notif = ?
                ORDER BY id""",
             (hora,),

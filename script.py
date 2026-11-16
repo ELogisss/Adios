@@ -8,6 +8,7 @@ np.DB = Path(__file__).parent / "mesa_partes.db"
 
 DB_PATH = Path(__file__).with_name("mesa_partes.db")
 ESTADOS = ["INGRESADO", "EN_REVISION", "OBSERVADO", "DERIVADO", "ATENDIDO", "ARCHIVADO"]
+SIN_NOTIFICACION = {"ATENDIDO", "ARCHIVADO"}
 
 
 def conectar():
@@ -103,12 +104,18 @@ def normalizar_hora(hora: str) -> str:
     return f"{hh:02d}:{mm:02d}"
 
 
-def hora_default() -> str:
-    with conectar() as conn:
-        row = conn.execute(
-            "SELECT valor FROM config WHERE clave='hora_notif'"
-        ).fetchone()
+def hora_default(conn=None) -> str:
+    if conn is None:
+        with conectar() as propia:
+            return hora_default(propia)
+    row = conn.execute(
+        "SELECT valor FROM config WHERE clave='hora_notif'"
+    ).fetchone()
     return row["valor"] if row else "09:00"
+
+
+def mostrar_hora(hora: str) -> str:
+    return hora or "fuera del cron"
 
 
 def registrar_expediente():
@@ -163,7 +170,7 @@ def listar_expedientes(filtro_estado=None):
         return
     for r in filas:
         print(
-            f"[{r['codigo']}] {r['fecha_ingreso']} | {r['estado']} | {r['hora_notif']}\n"
+            f"[{r['codigo']}] {r['fecha_ingreso']} | {r['estado']} | {mostrar_hora(r['hora_notif'])}\n"
             f"  Remitente: {r['remitente']} | Área: {r['area']}\n"
             f"  Asunto: {r['asunto']}"
         )
@@ -186,7 +193,7 @@ def buscar_expediente():
         return
     for r in filas:
         print(
-            f"[{r['codigo']}] {r['fecha_ingreso']} | {r['estado']} | {r['hora_notif']}\n"
+            f"[{r['codigo']}] {r['fecha_ingreso']} | {r['estado']} | {mostrar_hora(r['hora_notif'])}\n"
             f"  Remitente: {r['remitente']} | Área: {r['area']}\n"
             f"  Asunto: {r['asunto']}"
         )
@@ -213,16 +220,27 @@ def cambiar_estado():
             return
 
         observacion = input("Observación (opcional): ").strip() or None
-        conn.execute(
-            "UPDATE expedientes SET estado = ? WHERE id = ?",
-            (nuevo, exp["id"]),
-        )
+        if nuevo in SIN_NOTIFICACION:
+            conn.execute(
+                "UPDATE expedientes SET estado = ?, hora_notif = '' WHERE id = ?",
+                (nuevo, exp["id"]),
+            )
+        else:
+            hora = exp["hora_notif"] or hora_default(conn)
+            conn.execute(
+                "UPDATE expedientes SET estado = ?, hora_notif = ? WHERE id = ?",
+                (nuevo, hora, exp["id"]),
+            )
         conn.execute(
             """INSERT INTO historial (expediente_id, fecha, estado_anterior, estado_nuevo, observacion)
                VALUES (?, ?, ?, ?, ?)""",
             (exp["id"], ahora(), exp["estado"], nuevo, observacion),
         )
     print(f"Expediente {codigo}: {exp['estado']} -> {nuevo}")
+    if nuevo in SIN_NOTIFICACION:
+        print(f"{codigo} salió del cron: no se vuelve a notificar mientras esté en {nuevo}.")
+    elif not exp["hora_notif"]:
+        print(f"{codigo} volvió al cron con la hora por defecto.")
 
 
 def ver_historial():
@@ -288,7 +306,9 @@ def cambiar_hora_expediente():
             print("No existe ese expediente.")
             return
 
-        print(f"Hora actual de {codigo}: {exp['hora_notif']}")
+        print(f"Hora actual de {codigo}: {mostrar_hora(exp['hora_notif'])}")
+        if exp["estado"] in SIN_NOTIFICACION:
+            print(f"Ojo: está en {exp['estado']}, así que hoy no se notifica.")
         nueva = input("Nueva hora (HH:MM, Enter para cancelar): ").strip()
         if not nueva:
             return
@@ -304,6 +324,31 @@ def cambiar_hora_expediente():
     print(f"Hora de {codigo} actualizada a {nueva}.")
 
 
+def eliminar_expediente():
+    print("\n--- Eliminar expediente ---")
+    codigo = input("Código del expediente: ").strip().upper()
+    if not codigo:
+        return
+
+    with conectar() as conn:
+        exp = conn.execute(
+            "SELECT * FROM expedientes WHERE codigo = ?", (codigo,)
+        ).fetchone()
+        if not exp:
+            print("No existe ese expediente.")
+            return
+
+        print(f"[{exp['codigo']}] {exp['asunto']} ({exp['estado']})")
+        confirmar = input("¿Eliminar definitivamente? (s/N): ").strip().lower()
+        if confirmar != "s":
+            print("Cancelado.")
+            return
+
+        conn.execute("DELETE FROM historial WHERE expediente_id = ?", (exp["id"],))
+        conn.execute("DELETE FROM expedientes WHERE id = ?", (exp["id"],))
+    print(f"Expediente {codigo} eliminado. Salió del cron.")
+
+
 def menu():
     while True:
         print("\n=== Mesa de Partes ===")
@@ -314,6 +359,7 @@ def menu():
         print("5. Ver historial")
         print("6. Cambiar hora por defecto")
         print("7. Cambiar hora de un expediente")
+        print("8. Eliminar expediente")
         print("0. Salir")
         opcion = input("Opción: ").strip()
 
@@ -331,6 +377,8 @@ def menu():
             cambiar_hora()
         elif opcion == "7":
             cambiar_hora_expediente()
+        elif opcion == "8":
+            eliminar_expediente()
         elif opcion == "0":
             print("Chau.")
             break
