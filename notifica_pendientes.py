@@ -1,15 +1,3 @@
-"""
-notifica_pendientes.py — Toast con los expedientes pendientes (SQLite).
-
-Fuente de verdad: la DB sqlite del proyecto (expedientes.hora_notif y estado).
-Uso desde el programa principal:
-    import notifica_pendientes as np
-    np.DB = Path("mesa_partes.db")
-    np.configurar()   # asegura la tarea programada cada minuto
-    np.avisar()       # notifica ahora todos los pendientes (opcional)
-Uso como script (lo dispara cron / Programador de Tareas):
-    python3 notifica_pendientes.py --check
-"""
 import os
 import platform
 import sqlite3
